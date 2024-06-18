@@ -9,20 +9,21 @@ import (
 )
 
 var (
-	stdinFd = int(os.Stdin.Fd())
+	stdinfd  = int(os.Stdin.Fd())
+	stdoutfd = int(os.Stdout.Fd())
+
+	ioctlReadTermios  = unix.TIOCGETA
+	ioctlWriteTermios = unix.TIOCSETA
 )
 
 func enableRawMode() (*unix.Termios, error) {
-	t, err := unix.IoctlGetTermios(stdinFd, unix.TIOCGETA)
+	t, err := unix.IoctlGetTermios(stdinfd, uint(ioctlReadTermios))
 	if err != nil {
-		fmt.Println("Failed to get Termios")
+		return nil, err
 	}
-
-	raw := *t
-	raw.Cflag &^= unix.ECHO
-
-	err = unix.IoctlSetTermios(stdinFd, unix.TIOCSETA, &raw)
-	if err != nil {
+	raw := *t // make a copy to avoid mutating the original
+	raw.Lflag &^= unix.ECHO
+	if err := unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), &raw); err != nil {
 		return nil, err
 	}
 	return t, nil
