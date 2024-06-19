@@ -9,12 +9,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	ioctlReadTermios  = unix.TIOCGETA
+	ioctlWriteTermios = unix.TIOCSETA
+)
+
 var (
 	stdinfd  = int(os.Stdin.Fd())
 	stdoutfd = int(os.Stdout.Fd())
-
-	ioctlReadTermios  = unix.TIOCGETA
-	ioctlWriteTermios = unix.TIOCSETA
 )
 
 type editor struct {
