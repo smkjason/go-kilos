@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 )
@@ -16,28 +17,59 @@ var (
 	ioctlWriteTermios = unix.TIOCSETA
 )
 
-func enableRawMode() (*unix.Termios, error) {
-	t, err := unix.IoctlGetTermios(stdinfd, uint(ioctlReadTermios))
+type editor struct {
+	// Original Termios.
+	termios *unix.Termios
+}
+
+func (e *editor) disableRawMode() {
+	unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), e.termios)
+}
+
+func (e *editor) enableRawMode() (*unix.Termios, error) {
+	t, err := unix.IoctlGetTermios(unix.Stdin, uint(ioctlReadTermios))
 	if err != nil {
 		return nil, err
 	}
+	e.termios = t
+
 	raw := *t // make a copy to avoid mutating the original
-	raw.Lflag &^= unix.ECHO
+	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
+	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.ISIG
+	raw.Oflag &^= unix.OPOST
+	// raw.Cc[unix.VMIN] = 0
+	// raw.Cc[unix.VTIME] = 1
 	if err := unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), &raw); err != nil {
 		return nil, err
 	}
+
 	return t, nil
 }
 
 func main() {
-	_, err := enableRawMode()
+	e := editor{}
+	_, err := e.enableRawMode()
 	if err != nil {
 		fmt.Println("Failed enabling Raw")
 	}
-	scanner := bufio.NewScanner(os.Stdin)
+	defer e.disableRawMode()
 
-	for scanner.Scan() && scanner.Text() != "q" {
-		text := scanner.Text()
-		fmt.Println("You entered: " + text)
+	scanner := bufio.NewReader(os.Stdin)
+	for {
+		r, _, err := scanner.ReadRune()
+		if err != nil {
+			fmt.Println("There was an error reading...")
+			break
+		}
+
+		if string(r) == "q" {
+			break
+		}
+
+		if unicode.IsControl(r) {
+			fmt.Println("This is a control")
+		} else {
+			fmt.Println("You entered: " + string(r) + "\r")
+		}
 	}
 }
