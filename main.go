@@ -16,14 +16,14 @@ const (
 var (
 	stdinfd  = int(os.Stdin.Fd())
 	stdoutfd = int(os.Stdout.Fd())
+
+	originalTermios *unix.Termios
 )
 
 type key byte
 
 type editor struct {
 	reader *bufio.Reader
-
-	originalTermios *unix.Termios
 }
 
 // Kills the program.
@@ -33,35 +33,8 @@ func die() {
 
 func newEditor() *editor {
 	return &editor{
-		reader:          bufio.NewReader(os.Stdin),
-		originalTermios: nil,
+		reader: bufio.NewReader(os.Stdin),
 	}
-}
-
-// disableRawMode sets the Termios back to original.
-func (e *editor) disableRawMode() {
-	unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), e.originalTermios)
-}
-
-// enableRawMode enables rawMode.
-func (e *editor) enableRawMode() (*unix.Termios, error) {
-	t, err := unix.IoctlGetTermios(unix.Stdin, uint(ioctlReadTermios))
-	if err != nil {
-		return nil, err
-	}
-	e.originalTermios = t
-	raw := *t
-
-	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
-	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.ISIG
-	raw.Oflag &^= unix.OPOST
-	raw.Cc[unix.VMIN] = 1
-	raw.Cc[unix.VTIME] = 1
-	if err := unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), &raw); err != nil {
-		return nil, err
-	}
-
-	return t, nil
 }
 
 func (e *editor) readKey() (key, error) {
@@ -85,6 +58,32 @@ func (e *editor) readKey() (key, error) {
 	}
 }
 
+// disableRawMode sets the Termios back to original.
+func disableRawMode() {
+	unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), originalTermios)
+}
+
+// enableRawMode enables rawMode.
+func enableRawMode() error {
+	t, err := unix.IoctlGetTermios(unix.Stdin, uint(ioctlReadTermios))
+	if err != nil {
+		return err
+	}
+	originalTermios = t
+
+	raw := *t
+	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
+	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.ISIG
+	raw.Oflag &^= unix.OPOST
+	raw.Cc[unix.VMIN] = 1
+	raw.Cc[unix.VTIME] = 1
+	if err := unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), &raw); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // ctrl returns a byte resulting from pressing the given ASCII character with the ctrl-key.
 func ctrl(char byte) byte {
 	return char & 0x1f
@@ -92,11 +91,11 @@ func ctrl(char byte) byte {
 
 func main() {
 	e := newEditor()
-	_, err := e.enableRawMode()
+	err := enableRawMode()
 	if err != nil {
 		fmt.Println("Failed enabling Raw")
 	}
-	defer e.disableRawMode()
+	defer disableRawMode()
 
 	for {
 		k, err := e.readKey()
