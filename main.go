@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"unicode"
 
 	"golang.org/x/sys/unix"
 )
@@ -19,28 +18,45 @@ var (
 	stdoutfd = int(os.Stdout.Fd())
 )
 
+type key byte
+
 type editor struct {
-	// Original Termios.
-	termios *unix.Termios
+	reader *bufio.Reader
+
+	originalTermios *unix.Termios
 }
 
+// Kills the program.
+func die() {
+	os.Exit(1)
+}
+
+func newEditor() *editor {
+	return &editor{
+		reader:          bufio.NewReader(os.Stdin),
+		originalTermios: nil,
+	}
+}
+
+// disableRawMode sets the Termios back to original.
 func (e *editor) disableRawMode() {
-	unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), e.termios)
+	unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), e.originalTermios)
 }
 
+// enableRawMode enables rawMode.
 func (e *editor) enableRawMode() (*unix.Termios, error) {
 	t, err := unix.IoctlGetTermios(unix.Stdin, uint(ioctlReadTermios))
 	if err != nil {
 		return nil, err
 	}
-	e.termios = t
+	e.originalTermios = t
+	raw := *t
 
-	raw := *t // make a copy to avoid mutating the original
 	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
 	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.ISIG
 	raw.Oflag &^= unix.OPOST
-	// raw.Cc[unix.VMIN] = 0
-	// raw.Cc[unix.VTIME] = 1
+	raw.Cc[unix.VMIN] = 1
+	raw.Cc[unix.VTIME] = 1
 	if err := unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), &raw); err != nil {
 		return nil, err
 	}
@@ -48,30 +64,46 @@ func (e *editor) enableRawMode() (*unix.Termios, error) {
 	return t, nil
 }
 
+func (e *editor) readKey() (key, error) {
+	buf := make([]byte, 4)
+	for {
+		nread, err := e.reader.Read(buf)
+		if err != nil {
+			fmt.Println("Error reading")
+		}
+
+		if nread > 0 {
+			switch buf[0] {
+			case ctrl('q'):
+				fmt.Println("Goodbye.\r")
+				die()
+
+			default:
+				return key(buf[0]), nil
+			}
+		}
+	}
+}
+
+// ctrl returns a byte resulting from pressing the given ASCII character with the ctrl-key.
+func ctrl(char byte) byte {
+	return char & 0x1f
+}
+
 func main() {
-	e := editor{}
+	e := newEditor()
 	_, err := e.enableRawMode()
 	if err != nil {
 		fmt.Println("Failed enabling Raw")
 	}
 	defer e.disableRawMode()
 
-	scanner := bufio.NewReader(os.Stdin)
 	for {
-		r, _, err := scanner.ReadRune()
+		k, err := e.readKey()
 		if err != nil {
-			fmt.Println("There was an error reading...")
-			break
+			fmt.Println("There was an error reading input")
 		}
 
-		if string(r) == "q" {
-			break
-		}
-
-		if unicode.IsControl(r) {
-			fmt.Println("This is a control")
-		} else {
-			fmt.Println("You entered: " + string(r) + "\r")
-		}
+		fmt.Print(string(k))
 	}
 }
