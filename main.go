@@ -8,27 +8,33 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+/* --- data --- */
+
 const (
 	ioctlReadTermios  = unix.TIOCGETA
 	ioctlWriteTermios = unix.TIOCSETA
+	ioctlGetWin       = unix.TIOCGWINSZ
 )
 
 var (
 	stdinfd  = int(os.Stdin.Fd())
 	stdoutfd = int(os.Stdout.Fd())
 
-	originalTermios *unix.Termios
+	e *editor
 )
 
 type key byte
 
 type editor struct {
-	reader *bufio.Reader
-}
+	winSizeRow uint16
+	winSizeCol uint16
 
-// Kills the program.
-func die() {
-	os.Exit(1)
+	cursorRow int
+	cursorCol int
+
+	reader *bufio.Reader
+
+	termios *unix.Termios
 }
 
 func newEditor() *editor {
@@ -37,30 +43,24 @@ func newEditor() *editor {
 	}
 }
 
-func (e *editor) readKey() (key, error) {
-	buf := make([]byte, 4)
-	for {
-		nread, err := e.reader.Read(buf)
-		if err != nil {
-			fmt.Println("Error reading")
-		}
+/* --- terminal --- */
 
-		if nread > 0 {
-			switch buf[0] {
-			case ctrl('q'):
-				fmt.Println("Goodbye.\r")
-				die()
+func log(m string) {
+	fmt.Println("[log] " + m + "\r\n")
+}
 
-			default:
-				return key(buf[0]), nil
-			}
-		}
-	}
+// die kills and exits the program.
+func die(msg string) {
+	os.Stdout.WriteString("\x1b[2J")
+	os.Stderr.WriteString("\x1b[H")
+
+	fmt.Print(msg + "\r")
+	os.Exit(1)
 }
 
 // disableRawMode sets the Termios back to original.
 func disableRawMode() {
-	unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), originalTermios)
+	unix.IoctlSetTermios(stdinfd, uint(ioctlWriteTermios), e.termios)
 }
 
 // enableRawMode enables rawMode.
@@ -69,7 +69,7 @@ func enableRawMode() error {
 	if err != nil {
 		return err
 	}
-	originalTermios = t
+	e.termios = t
 
 	raw := *t
 	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
@@ -84,21 +84,109 @@ func enableRawMode() error {
 	return nil
 }
 
+func getWindowSize() (uint16, uint16, error) {
+	if w, err := unix.IoctlGetWinsize(unix.Stdin, ioctlGetWin); err == nil {
+		return w.Row, w.Col, nil
+	}
+
+	// Fallback: Move the cursor to the bottom-right and read the position
+	if _, err := os.Stdout.Write([]byte("\x1b[999C\x1b[999B")); err != nil {
+		return 0, 0, err
+	}
+
+	r, c, err := getCursorPosition()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return uint16(r), uint16(c), nil
+}
+
+func getCursorPosition() (row, col int, err error) {
+	if _, err = os.Stdout.Write([]byte("\x1b[6n")); err != nil {
+		return
+	}
+	if _, err = fmt.Fscanf(os.Stdin, "\x1b[%d;%d", &row, &col); err != nil {
+		return
+	}
+	return
+}
+
+/*  --- outputs --- */
+
+func drawRows() {
+	for i := 0; i < int(e.winSizeRow); i++ {
+		os.Stdout.WriteString("~\r\n")
+	}
+}
+
+func refreshScreen() {
+	log("refreshScreen")
+	os.Stdout.WriteString("\x1b[2J")
+	os.Stdout.WriteString("\x1b[H")
+	drawRows()
+
+	os.Stdout.WriteString("\x1b[H")
+}
+
+/*  --- inputs --- */
+
 // ctrl returns a byte resulting from pressing the given ASCII character with the ctrl-key.
 func ctrl(char byte) byte {
 	return char & 0x1f
 }
 
+func readKey() (key, error) {
+	buf := make([]byte, 4)
+	for {
+		nread, err := e.reader.Read(buf)
+		if err != nil {
+			fmt.Println("Error reading")
+		}
+
+		if nread > 0 {
+			switch buf[0] {
+			case ctrl('q'):
+				die("Goodbye...")
+
+			default:
+				return key(buf[0]), nil
+			}
+		}
+	}
+}
+
+/* --- main --- */
+
+func initEditor() {
+	winRow, winCol, err := getWindowSize()
+	if err != nil {
+		die("setWindowSize")
+	}
+
+	e.winSizeRow, e.winSizeCol = winRow, winCol
+
+	row, col, err := getCursorPosition()
+	if err != nil {
+		die("getCursorPosition")
+	}
+
+	e.cursorRow = row
+	e.cursorCol = col
+}
+
 func main() {
-	e := newEditor()
+	e = newEditor()
 	err := enableRawMode()
 	if err != nil {
 		fmt.Println("Failed enabling Raw")
 	}
 	defer disableRawMode()
+	initEditor()
 
+	// refreshScreen()
 	for {
-		k, err := e.readKey()
+		k, err := readKey()
 		if err != nil {
 			fmt.Println("There was an error reading input")
 		}
