@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -14,6 +15,8 @@ const (
 	ioctlReadTermios  = unix.TIOCGETA
 	ioctlWriteTermios = unix.TIOCSETA
 	ioctlGetWin       = unix.TIOCGWINSZ
+
+	welcomeMessage = "Welcome to Kilos - built in Golang"
 )
 
 var (
@@ -25,9 +28,12 @@ var (
 
 type key byte
 
+type abuf struct {
+}
+
 type editor struct {
-	winSizeRow uint16
-	winSizeCol uint16
+	winSizeRow int
+	winSizeCol int
 
 	cursorRow int
 	cursorCol int
@@ -45,16 +51,12 @@ func newEditor() *editor {
 
 /* --- terminal --- */
 
-func log(m string) {
-	fmt.Println("[log] " + m + "\r\n")
-}
-
 // die kills and exits the program.
 func die(msg string) {
 	os.Stdout.WriteString("\x1b[2J")
 	os.Stderr.WriteString("\x1b[H")
 
-	fmt.Print(msg + "\r")
+	log.Fatal(msg)
 	os.Exit(1)
 }
 
@@ -84,9 +86,9 @@ func enableRawMode() error {
 	return nil
 }
 
-func getWindowSize() (uint16, uint16, error) {
+func getWindowSize() (int, int, error) {
 	if w, err := unix.IoctlGetWinsize(unix.Stdin, ioctlGetWin); err == nil {
-		return w.Row, w.Col, nil
+		return int(w.Row), int(w.Col), nil
 	}
 
 	// Fallback: Move the cursor to the bottom-right and read the position
@@ -99,7 +101,7 @@ func getWindowSize() (uint16, uint16, error) {
 		return 0, 0, err
 	}
 
-	return uint16(r), uint16(c), nil
+	return r, c, nil
 }
 
 func getCursorPosition() (row, col int, err error) {
@@ -115,18 +117,31 @@ func getCursorPosition() (row, col int, err error) {
 /*  --- outputs --- */
 
 func drawRows() {
-	for i := 0; i < int(e.winSizeRow); i++ {
-		os.Stdout.WriteString("~\r\n")
+	for i := 0; i < e.winSizeRow; i++ {
+		if i == e.winSizeRow/2 {
+			padding := (e.winSizeCol - len(welcomeMessage)) / 2
+			for ; padding > 0; padding-- {
+				os.Stdout.WriteString(" ")
+			}
+			os.Stdout.WriteString("Kilo editor -- version v1")
+		} else {
+			os.Stdout.Write([]byte("~"))
+		}
+		os.Stdout.Write([]byte("\x1b[K"))
+
+		if i < e.winSizeRow-1 {
+			os.Stdout.WriteString("\r\n")
+		}
 	}
 }
 
 func refreshScreen() {
-	log("refreshScreen")
-	os.Stdout.WriteString("\x1b[2J")
-	os.Stdout.WriteString("\x1b[H")
+	os.Stdout.Write([]byte("\x1b[?25l"))
+	os.Stdout.Write([]byte("\x1b[H"))
 	drawRows()
 
-	os.Stdout.WriteString("\x1b[H")
+	os.Stdout.Write([]byte("\x1b[?25h"))
+
 }
 
 /*  --- inputs --- */
@@ -141,7 +156,7 @@ func readKey() (key, error) {
 	for {
 		nread, err := e.reader.Read(buf)
 		if err != nil {
-			fmt.Println("Error reading")
+			log.Fatal("Error reading")
 		}
 
 		if nread > 0 {
@@ -164,7 +179,7 @@ func initEditor() {
 		die("setWindowSize")
 	}
 
-	e.winSizeRow, e.winSizeCol = winRow, winCol
+	e.winSizeRow, e.winSizeCol = int(winRow), int(winCol)
 
 	row, col, err := getCursorPosition()
 	if err != nil {
@@ -179,13 +194,13 @@ func main() {
 	e = newEditor()
 	err := enableRawMode()
 	if err != nil {
-		fmt.Println("Failed enabling Raw")
+		log.Fatal("Failed enabling Raw")
 	}
 	defer disableRawMode()
 	initEditor()
 
-	// refreshScreen()
 	for {
+		refreshScreen()
 		k, err := readKey()
 		if err != nil {
 			fmt.Println("There was an error reading input")
