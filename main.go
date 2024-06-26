@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -11,12 +12,19 @@ import (
 
 /* --- data --- */
 
+type key int32
+
 const (
 	ioctlReadTermios  = unix.TIOCGETA
 	ioctlWriteTermios = unix.TIOCSETA
 	ioctlGetWin       = unix.TIOCGWINSZ
 
 	welcomeMessage = "Welcome to Kilos - built in Golang"
+
+	keyArrowLeft key = iota + 1000
+	keyArrowRight
+	keyArrowUp
+	keyArrowDown
 )
 
 var (
@@ -26,8 +34,6 @@ var (
 	e *editor
 )
 
-type key byte
-
 type abuf struct {
 }
 
@@ -35,8 +41,8 @@ type editor struct {
 	winSizeRow int
 	winSizeCol int
 
-	cursorRow int
-	cursorCol int
+	cx int
+	cy int
 
 	reader *bufio.Reader
 
@@ -56,7 +62,7 @@ func die(msg string) {
 	os.Stdout.WriteString("\x1b[2J")
 	os.Stderr.WriteString("\x1b[H")
 
-	log.Fatal(msg)
+	log.Fatal(msg + "\r")
 	os.Exit(1)
 }
 
@@ -127,6 +133,7 @@ func drawRows() {
 		} else {
 			os.Stdout.Write([]byte("~"))
 		}
+
 		os.Stdout.Write([]byte("\x1b[K"))
 
 		if i < e.winSizeRow-1 {
@@ -140,15 +147,34 @@ func refreshScreen() {
 	os.Stdout.Write([]byte("\x1b[H"))
 	drawRows()
 
+	// Position cursor.
+	os.Stdout.Write([]byte(fmt.Sprintf("\x1b[%d;%dH", e.cy+10, e.cx+10)))
 	os.Stdout.Write([]byte("\x1b[?25h"))
-
 }
 
 /*  --- inputs --- */
 
+func moveCursor(k key) {
+	switch k {
+	case keyArrowUp:
+		if e.cy > 0 {
+			e.cy--
+		}
+	case keyArrowDown:
+		e.cy++
+	case keyArrowLeft:
+		if e.cx > 0 {
+			e.cx--
+		}
+	case keyArrowRight:
+		e.cx++
+	default:
+	}
+}
+
 // ctrl returns a byte resulting from pressing the given ASCII character with the ctrl-key.
-func ctrl(char byte) byte {
-	return char & 0x1f
+func ctrl(char byte) key {
+	return key(char & 0x1f)
 }
 
 func readKey() (key, error) {
@@ -160,10 +186,15 @@ func readKey() (key, error) {
 		}
 
 		if nread > 0 {
-			switch buf[0] {
-			case ctrl('q'):
-				die("Goodbye...")
-
+			switch {
+			case bytes.Equal(buf, []byte("\x1b[A")):
+				return keyArrowUp, nil
+			case bytes.Equal(buf, []byte("\x1b[B")):
+				return keyArrowDown, nil
+			case bytes.Equal(buf, []byte("\x1b[C")):
+				return keyArrowRight, nil
+			case bytes.Equal(buf, []byte("\x1b[D")):
+				return keyArrowLeft, nil
 			default:
 				return key(buf[0]), nil
 			}
@@ -171,23 +202,34 @@ func readKey() (key, error) {
 	}
 }
 
+func processKey() {
+	k, err := readKey()
+	if err != nil {
+		log.Fatal("failed to read key")
+	}
+
+	switch k {
+	case ctrl('q'):
+		die("goodbye")
+	case keyArrowDown, keyArrowLeft, keyArrowRight, keyArrowUp:
+		moveCursor(k)
+	default:
+		os.Stdout.WriteString(string(k))
+	}
+}
+
 /* --- main --- */
 
 func initEditor() {
+	e.cx = 0
+	e.cy = 0
+
 	winRow, winCol, err := getWindowSize()
 	if err != nil {
 		die("setWindowSize")
 	}
 
 	e.winSizeRow, e.winSizeCol = int(winRow), int(winCol)
-
-	row, col, err := getCursorPosition()
-	if err != nil {
-		die("getCursorPosition")
-	}
-
-	e.cursorRow = row
-	e.cursorCol = col
 }
 
 func main() {
@@ -201,11 +243,6 @@ func main() {
 
 	for {
 		refreshScreen()
-		k, err := readKey()
-		if err != nil {
-			fmt.Println("There was an error reading input")
-		}
-
-		fmt.Print(string(k))
+		processKey()
 	}
 }
